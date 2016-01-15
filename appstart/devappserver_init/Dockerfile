@@ -20,4 +20,4 @@ RUN curl https://dl.google.com/dl/cloudsdk/release/install_google_cloud_sdk.bash
 RUN bash ./install.sh --disable-prompts --install-dir ./sdk
 RUN SDK_ROOT=$(echo /sdk/$(ls sdk/)); $(echo $SDK_ROOT/bin/gcloud components update --quiet preview app app-engine-python app-engine-php app-engine-java)
 ADD ./das.sh /
-ENTRYPOINT /das.sh
+ENTRYPOINT /bin/bash /das.sh

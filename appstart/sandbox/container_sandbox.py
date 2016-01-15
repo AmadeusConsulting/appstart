@@ -28,15 +28,12 @@ import io
 import os
 import sys
 import time
-
 import docker
-
 import configuration
 import container
 from .. import utils
 from .. import constants
 from ..utils import get_logger
-
 
 # Maximum attempts to health check application container.
 MAX_ATTEMPTS = 30
@@ -63,11 +60,12 @@ class ContainerSandbox(object):
     statement), or the start and stop functions should be invoked from
     within a try-finally context.
     """
+
     # pylint: disable=too-many-instance-attributes
     # pylint: disable=too-many-arguments
 
     def __init__(self,
-                 config_file=None,
+                 config_files=None,
                  image_name=None,
                  application_id=None,
                  application_port=8080,
@@ -192,25 +190,25 @@ class ContainerSandbox(object):
         self.pinger_container = None
         self.nocache = nocache
         self.run_devappserver = run_api_server
-        self.timeout = timeout        
-        self.devbase_image=constants.DEVAPPSERVER_IMAGE
+        self.timeout = timeout
+        self.devbase_image = constants.DEVAPPSERVER_IMAGE
         self.extra_ports = extra_ports
-        
-        if devbase_image:
-          self.devbase_image=devbase_image
 
-        if config_file:
-            self.conf_path = os.path.abspath(config_file)
+        if devbase_image:
+            self.devbase_image = devbase_image
+
+        if config_files:
+            self.conf_paths = [os.path.abspath(cf) for cf in config_files]
         else:
             if not image_name:
                 raise utils.AppstartAbort('At least one of config_file and '
                                           'image_name must be specified.')
-            self.conf_path = os.path.join(os.path.dirname(__file__),
-                                          'app.yaml')
+            self.conf_paths = [os.path.join(os.path.dirname(__file__),
+                                            'app.yaml')]
         self.application_configuration = (
-            configuration.ApplicationConfiguration(self.conf_path))
+            configuration.ApplicationConfiguration(self.conf_paths[0]))
 
-        self.app_dir = self.app_directory_from_config(self.conf_path)
+        self.app_dir = self.app_directory_from_config(self.conf_paths[0])
 
         # For Java apps, the xml file must be offset by WEB-INF.
         # Otherwise, devappserver will think that it's a non-java app.
@@ -250,15 +248,14 @@ class ContainerSandbox(object):
                        'PROXY_PORT': self.internal_proxy_port,
                        'API_PORT': self.internal_api_port,
                        'ADMIN_PORT': self.internal_admin_port,
-                       'CONFIG_FILE': os.path.join(
-                           self.das_offset,
-                           os.path.basename(self.conf_path))}
+                       'CONFIG_FILE': ' '.join([os.path.join(self.das_offset, os.path.basename(path))
+                                                for path in self.conf_paths])}
 
             if self.app_id:
                 das_env['APP_ID'] = self.app_id
 
             devappserver_image = self.build_devappserver_image(
-              devbase_image=self.devbase_image
+                devbase_image=self.devbase_image
             )
             devappserver_container_name = (
                 self.make_timestamped_name('devappserver',
@@ -312,12 +309,13 @@ class ContainerSandbox(object):
         #     app directory
 
         # TODO (find in g3 and link to here via comment)
-        app_env = {'API_HOST': '0.0.0.0',
+        app_env = {'SERVER_SOFTWARE': 'DEVELOPMENT',
+                   'API_HOST': '0.0.0.0',
                    'API_PORT': self.internal_api_port,
                    'GAE_LONG_APP_ID': self.app_id,
                    'GAE_PARTITION': 'dev',
                    'GAE_MODULE_INSTANCE': '0',
-                   'MODULE_YAML_PATH': os.path.basename(self.conf_path),
+                   'MODULE_YAML_PATH': os.path.basename(self.conf_paths[0]),
                    'GAE_MODULE_NAME': 'default',  # TODO(gouzenko) parse app.yaml
                    'GAE_MODULE_VERSION': '1',
                    'GAE_SERVER_PORT': '8080',
@@ -391,6 +389,8 @@ class ContainerSandbox(object):
             raise
 
         self.wait_for_start()
+        # call /_ah/start ?
+
         self.app_container.stream_logs()
 
     def stop(self):
@@ -478,8 +478,8 @@ class ContainerSandbox(object):
         if self.run_devappserver:
             get_logger().info('(port {0} goes through the dev_appserver '
                               'proxy, for direct access use {1})'.format(
-                                  self.proxy_port,
-                                  self.port))
+                self.proxy_port,
+                self.port))
 
     @staticmethod
     def app_directory_from_config(full_config_file_path):
@@ -508,7 +508,7 @@ class ContainerSandbox(object):
         utils.build_from_directory(self.app_dir, name)
         return name
 
-    def build_devappserver_image(self,devbase_image=constants.DEVAPPSERVER_IMAGE):
+    def build_devappserver_image(self, devbase_image=constants.DEVAPPSERVER_IMAGE):
         """Build a layer over devappserver to include application files.
 
         The new image contains the user's config files.
@@ -518,20 +518,35 @@ class ContainerSandbox(object):
         """
         # Collect the files that should be added to the docker build
         # context.
-        files_to_add = {self.conf_path: None}
+        path_dirs = set([os.path.dirname(path) for path in self.conf_paths])
+
+        files_to_add = dict.fromkeys(self.conf_paths)
         if self.application_configuration.is_java:
-            files_to_add[self.get_web_xml(self.conf_path)] = None
-        utils.add_files_from_static_dirs(files_to_add, self.conf_path)
+            files_to_add[self.get_web_xml(self.conf_paths[0])] = None
+
+        # Add any other valid yaml files over
+        valid_yaml_file_names = ['queue', 'cron', 'dispatch', 'index']
+        for dirname in path_dirs:
+            for filename in valid_yaml_file_names:
+                full_path = os.path.join(dirname, '%s.yaml' % filename)
+                if os.path.isfile(full_path):
+                    files_to_add[full_path] = None
+
+        utils.add_files_from_static_dirs(files_to_add, self.conf_paths[0])
 
         # The Dockerfile should add the config files to
         # the /app folder in devappserver's container.
         dockerfile = """
         FROM %(das_repo)s
-        ADD %(path)s/ %(dest)s
+        %(paths)s
         WORKDIR /app/
         """ % {'das_repo': devbase_image,
-               'path': os.path.dirname(self.conf_path),
-               'dest': os.path.join('/app', self.das_offset)}
+               'paths': '\n'.join(
+                   ['ADD %(path)s/ %(dest)s' % {
+                       'path': path,
+                       'dest': os.path.join('/app', self.das_offset)}
+                    for path in path_dirs])
+               }
 
         # Construct a file-like object from the Dockerfile.
         dockerfile_obj = io.BytesIO(dockerfile.encode('utf-8'))

@@ -198,8 +198,8 @@ def add_appstart_args(parser):
                         help='How many seconds to wait for the application '
                         'to start listening on port 8080. Defaults to 30 '
                         'seconds.')
-    parser.add_argument('config_file',
-                        nargs='?',
+    parser.add_argument('config_files',
+                        nargs='+',
                         default=None,
                         help='The relative or absolute path to the '
                         "application\'s .yaml or .xml file.")

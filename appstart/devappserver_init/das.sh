@@ -1,3 +1,4 @@
+read -a CONFIG_FILE_LIST <<<"$CONFIG_FILE"
 SDK_ROOT=/sdk/$(ls /sdk/)
 export PYTHONPATH=$SDK_ROOT/lib/
 python $(find $SDK_ROOT -name dev_appserver.py | head -1) \
@@ -26,4 +27,4 @@ python $(find $SDK_ROOT -name dev_appserver.py | head -1) \
     --storage_path=/storage \
     --logs_path=./log.txt \
     --automatic_restart=False \
-    /app/$CONFIG_FILE
+    "${CONFIG_FILE_LIST[@]/#/\/app\/}"
